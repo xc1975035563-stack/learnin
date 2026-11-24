@@ -1,0 +1,13 @@
+{
+  "pages": ["pages/index/index"],
+  "window": {
+    "navigationBarTitleText": "自习室",
+    "navigationBarBackgroundColor": "#f3ecdf",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f3ecdf",
+    "backgroundTextStyle": "dark"
+  },
+  "style": "v2",
+  "lazyCodeLoading": "requiredComponents",
+  "sitemapLocation": "sitemap.json"
+}

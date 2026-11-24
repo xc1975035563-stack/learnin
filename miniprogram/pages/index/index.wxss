@@ -1,0 +1,226 @@
+.app {
+  padding: 32rpx 32rpx 80rpx;
+}
+
+.top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+
+.eyebrow {
+  display: block;
+  color: #0f6e56;
+  font-size: 22rpx;
+  letter-spacing: 2rpx;
+}
+
+.title {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 64rpx;
+  font-weight: 600;
+}
+
+.today {
+  color: #6f675c;
+  font-size: 26rpx;
+}
+
+.tabs, .domains, .row, .actions, .mastery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+}
+
+.tabs, .domains {
+  margin-top: 28rpx;
+}
+
+.domains {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  width: 100%;
+  height: 88rpx;
+}
+
+.tab, .chip, .btn, .rate, .level, .studied {
+  padding: 16rpx 28rpx;
+  border-radius: 999rpx;
+  border: 1rpx solid #e2d6c4;
+  background: transparent;
+  font-size: 28rpx;
+}
+
+.tab.on, .chip.on {
+  background: #1d1a16;
+  color: #fffdf8;
+  border-color: #1d1a16;
+}
+
+.chip, .tab {
+  display: inline-flex;
+  margin-right: 12rpx;
+}
+
+.panel, .study, .stat, .item {
+  margin-top: 24rpx;
+  background: #fffdf8;
+  border: 1rpx solid #e2d6c4;
+  border-radius: 28rpx;
+}
+
+.panel, .item {
+  padding: 28rpx;
+}
+
+.study {
+  padding: 40rpx 32rpx 28rpx;
+}
+
+.kicker, .meta, .label, .hint, .empty {
+  display: block;
+  color: #6f675c;
+  font-size: 24rpx;
+  line-height: 1.6;
+}
+
+.prompt {
+  display: block;
+  margin: 24rpx 0;
+  font-size: 44rpx;
+  line-height: 1.4;
+  font-weight: 650;
+}
+
+.answer {
+  display: block;
+  margin: 12rpx 0 24rpx;
+  padding-top: 20rpx;
+  border-top: 1rpx dashed #e2d6c4;
+}
+
+.btn, .rate {
+  border-radius: 20rpx;
+  background: #fff;
+}
+
+.btn.primary, .rate.good {
+  background: #0f6e56;
+  color: #fff;
+  border-color: #0f6e56;
+}
+
+.rate.again { color: #9f2d20; }
+.rate.hard { color: #9a5b12; }
+.rate.easy { color: #1d4e89; }
+
+.field {
+  margin: 8rpx 0 16rpx;
+  padding: 18rpx 20rpx;
+  border: 1rpx solid #e2d6c4;
+  border-radius: 20rpx;
+  background: #fff;
+}
+
+.area {
+  width: 100%;
+  min-height: 180rpx;
+  box-sizing: border-box;
+}
+.tall { min-height: 360rpx; }
+
+.item-title {
+  display: block;
+  margin: 8rpx 0 12rpx;
+  font-size: 34rpx;
+  font-weight: 650;
+}
+
+.progress {
+  display: block;
+  margin-top: 20rpx;
+  color: #0f6e56;
+  font-weight: 650;
+}
+
+.mastery {
+  align-items: center;
+  margin: 12rpx 0 16rpx;
+}
+
+.level, .studied {
+  padding: 12rpx 20rpx;
+  font-size: 24rpx;
+}
+
+.level { background: #e4dfd6; border-color: #cfc8bc; color: #6f675c; }
+.level.on { color: #fffdf8; }
+
+.studied {
+  background: #c6ff4a;
+  border-color: #8eef12;
+  color: #163000;
+}
+
+.studied.done {
+  background: #7dff14;
+  border-color: #4ad000;
+  color: #102400;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16rpx;
+  margin-top: 24rpx;
+}
+
+.stat {
+  padding: 24rpx;
+}
+
+.num {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 52rpx;
+}
+
+.bars {
+  display: flex;
+  align-items: flex-end;
+  height: 280rpx;
+  margin-top: 20rpx;
+}
+
+.bar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  height: 100%;
+}
+
+.bar-fill {
+  width: 70%;
+  background: #0f6e56;
+  border-radius: 12rpx 12rpx 4rpx 4rpx;
+}
+
+.bar text, .domain-line text {
+  color: #6f675c;
+  font-size: 22rpx;
+}
+
+.domain-line {
+  display: flex;
+  justify-content: space-between;
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #e2d6c4;
+}
+
+.strong {
+  color: #1d1a16;
+  font-weight: 700;
+}

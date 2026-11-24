@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>自习室</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: #f3ecdf; color: #1d1a16;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    .app { width: min(720px, calc(100% - 28px)); margin: 0 auto; padding: 22px 0 48px; }
+    h1 { margin: 0; font-size: 34px; }
+    .hint, .kicker, .meta { color: #6f675c; font-size: 13px; line-height: 1.55; }
+    .chips { display: flex; gap: 8px; overflow-x: auto; margin: 16px 0; padding-bottom: 4px; }
+    .chip, .btn, .level, .studied {
+      border: 1px solid #e2d6c4; background: transparent; border-radius: 999px;
+      padding: 8px 14px; font: inherit; color: inherit; white-space: nowrap;
+    }
+    .chip.on { background: #1d1a16; color: #fffdf8; }
+    .card {
+      background: #fffdf8; border: 1px solid #e2d6c4; border-radius: 18px; padding: 22px 18px;
+    }
+    .prompt { font-size: 26px; line-height: 1.4; margin: 12px 0; }
+    textarea { width: 100%; margin: 8px 0; padding: 10px; border: 1px solid #e2d6c4; border-radius: 12px; font: inherit; }
+    textarea.tall { min-height: 220px; }
+    .answer { border-top: 1px dashed #e2d6c4; padding-top: 14px; white-space: pre-wrap; line-height: 1.6; }
+    .bad { color: #9f2d20; font-weight: 650; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .btn, .level, .studied { border-radius: 12px; }
+    .primary { background: #0f6e56; color: white; border-color: #0f6e56; }
+    .level { background: #e4dfd6; color: #6f675c; }
+    .level.on { color: #fffdf8; }
+    .studied { background: #c6ff4a; border-color: #8eef12; }
+    .studied.done { background: #7dff14; }
+    .progress { color: #0f6e56; font-weight: 650; }
+    .again { color: #9f2d20; } .hard { color: #9a5b12; }
+    .good { background: #0f6e56; color: white; border-color: #0f6e56; }
+    .easy { color: #1d4e89; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <h1>自习室</h1>
+    <p class="hint" id="status"></p>
+    <div class="chips" id="domains"></div>
+    <p class="progress" id="progress"></p>
+    <section class="card" id="study"></section>
+    <div class="row">
+      <button class="btn" id="backup" type="button">备份进度</button>
+      <button class="btn" id="restore" type="button">恢复进度</button>
+      <input id="restore-file" type="file" accept="application/json" hidden />
+    </div>
+    <p class="hint">进度记在这台手机的浏览器里。电脑关机后仍可背题。换浏览器或清除网站数据会丢掉进度，先点备份。</p>
+  </div>
+  <script id="seed" type="application/json">__SEED__</script>
+  <script>
+    const KEY = "study-room-phone-v1";
+    const COLORS = ["#c44536","#d97706","#0f766e","#1d4e89","#6d28d9","#be185d","#3f6212","#b45309","#0369a1","#9f1239","#0e7490","#7c3aed"];
+    const TERMS = ["Retrieval-Augmented Generation","Reciprocal Rank Fusion","Function Calling","Text2SQL","Cross-Encoder","Embedding Model","Graph RAG","GraphRAG","LangChain","LangGraph","向量数据库","嵌入模型","检索增强生成","混合召回","重排序","知识图谱","查询改写","查询路由","装饰器","生成器","迭代器","元数据","相似度","分块","幻觉","Milvus","Redis","HNSW","HyDE","RAGAS","RAG","LLM","GPT","BERT"];
+    const seed = JSON.parse(document.getElementById("seed").textContent);
+    let db = load();
+    let domainId = null;
+    let index = 0;
+    let revealed = false;
+    let editing = false;
+
+    function pad(n) { return String(n).padStart(2, "0"); }
+    function today() {
+      const date = new Date();
+      return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate());
+    }
+    function addDays(iso, days) {
+      const parts = iso.split("-").map(Number);
+      const date = new Date(parts[0], parts[1] - 1, parts[2]);
+      date.setDate(date.getDate() + days);
+      return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate());
+    }
+    function load() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(KEY) || "null");
+        if (saved && saved.cards) return saved;
+      } catch (error) {}
+      const fresh = JSON.parse(JSON.stringify(seed));
+      localStorage.setItem(KEY, JSON.stringify(fresh));
+      return fresh;
+    }
+    function save() { localStorage.setItem(KEY, JSON.stringify(db)); }
+    function schedule(quality, repetitions, ease, interval) {
+      ease = ease + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02));
+      if (ease < 1.3) ease = 1.3;
+      ease = Math.round(ease * 10000) / 10000;
+      if (quality < 3) return [0, ease, 1];
+      let next = 1;
+      if (repetitions === 1) next = 6;
+      else if (repetitions > 1) next = Math.max(1, Math.round(interval * ease));
+      return [repetitions + 1, ease, next];
+    }
+    function escapeHtml(value) {
+      return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+    function rich(value, highlight) {
+      let html = escapeHtml(value || "").replace(/\[\[red\]\]/g, '<span class="bad">').replace(/\[\[\/red\]\]/g, "</span>");
+      if (highlight) {
+        TERMS.slice().sort((a, b) => b.length - a.length).forEach((term) => {
+          html = html.split(term).join("<strong>" + term + "</strong>");
+        });
+      }
+      return html;
+    }
+    function domainName(id) {
+      const found = db.domains.find((item) => item.id === id);
+      return found ? found.name : "";
+    }
+    function queue() {
+      const day = today();
+      return db.cards
+        .filter((card) => card.due <= day && (domainId == null || card.domain_id === domainId))
+        .sort((a, b) => a.due === b.due ? a.id - b.id : a.due < b.due ? -1 : 1);
+    }
+    function randomColor(previous) {
+      const choices = COLORS.filter((color) => color !== previous);
+      return choices[Math.floor(Math.random() * choices.length)];
+    }
+
+    function render() {
+      const names = db.domains.map((item) => `<button class="chip ${domainId === item.id ? "on" : ""}" data-id="${item.id}">${item.name}</button>`).join("");
+      document.getElementById("domains").innerHTML = `<button class="chip ${domainId == null ? "on" : ""}" data-id="">全部</button>` + names;
+      document.getElementById("status").textContent = "手机本地题库 · " + db.cards.length + " 张 · 电脑关机也能背";
+      const interview = db.domains.find((item) => item.name === "面试题库");
+      const showProgress = interview && (domainId === interview.id || queue().some((card) => card.domain_id === interview.id));
+      if (interview && domainId === interview.id) {
+        const cards = db.cards.filter((card) => card.domain_id === interview.id);
+        const done = cards.filter((card) => (card.studied_days || []).includes(today())).length;
+        document.getElementById("progress").textContent = "今日复习进度 " + done + "/" + cards.length;
+      } else {
+        document.getElementById("progress").textContent = "";
+      }
+      const cards = queue();
+      if (index >= cards.length) index = 0;
+      const study = document.getElementById("study");
+      if (!cards.length) {
+        study.innerHTML = `<p class="kicker">今天的清单已经清空</p><h2 class="prompt">没有到期的卡片</h2>`;
+        return;
+      }
+      const card = cards[index];
+      const highlight = domainName(card.domain_id) === "面试题库";
+      if (editing) {
+        study.innerHTML = `
+          <p class="kicker">${domainName(card.domain_id)} · 正在改这道题</p>
+          <textarea class="inline" id="edit-front">${escapeHtml(card.front)}</textarea>
+          <textarea class="inline tall" id="edit-back">${escapeHtml(card.back)}</textarea>
+          <div class="row">
+            <button class="btn primary" id="save-edit" type="button">保存</button>
+            <button class="btn" id="cancel-edit" type="button">取消</button>
+          </div>`;
+        document.getElementById("save-edit").addEventListener("click", () => {
+          const front = document.getElementById("edit-front").value.trim();
+          const back = document.getElementById("edit-back").value.trim();
+          if (!front || !back) return;
+          card.front = front;
+          card.back = back;
+          editing = false;
+          save();
+          render();
+        });
+        document.getElementById("cancel-edit").addEventListener("click", () => {
+          editing = false;
+          render();
+        });
+        document.getElementById("edit-front").focus();
+        return;
+      }
+      const levels = ["一般", "基本掌握", "熟练"].map((level) => {
+        const on = card.mastery === level && card.mastery_color;
+        const style = on ? ` style="background:${card.mastery_color};border-color:${card.mastery_color}"` : "";
+        return `<button class="level ${on ? "on" : ""}"${style} data-level="${level}">${level}</button>`;
+      }).join("");
+      const studied = (card.studied_days || []).includes(today());
+      study.innerHTML = `
+        <p class="kicker">${domainName(card.domain_id)} · ${index + 1} / ${cards.length}</p>
+        <div class="prompt">${rich(card.front, highlight)}</div>
+        ${highlight ? `<div class="row"><span class="meta">掌握程度</span>${levels}<button class="studied ${studied ? "done" : ""}" id="studied">今日已复习</button></div>` : ""}
+        ${revealed ? `<div class="answer">${rich(card.back, highlight)}</div>` : ""}
+        <div class="row">
+          ${revealed
+            ? `<button class="btn again" data-quality="1">重来</button><button class="btn hard" data-quality="3">困难</button><button class="btn good" data-quality="4">记得</button><button class="btn easy" data-quality="5">简单</button>`
+            : `<button class="btn primary" id="reveal">看答案</button>`}
+          <button class="btn" id="edit-card" type="button">编辑</button>
+        </div>`;
+      document.getElementById("reveal")?.addEventListener("click", () => { revealed = true; render(); });
+      document.getElementById("edit-card")?.addEventListener("click", () => { editing = true; render(); });
+      study.querySelectorAll("[data-quality]").forEach((button) => button.addEventListener("click", () => rate(card, Number(button.dataset.quality))));
+      study.querySelectorAll("[data-level]").forEach((button) => button.addEventListener("click", () => {
+        card.mastery = button.dataset.level;
+        card.mastery_color = randomColor(card.mastery_color || "");
+        save();
+        render();
+      }));
+      document.getElementById("studied")?.addEventListener("click", () => {
+        card.studied_days = card.studied_days || [];
+        if (!card.studied_days.includes(today())) card.studied_days.push(today());
+        save();
+        render();
+      });
+    }
+
+    function rate(card, quality) {
+      const result = schedule(quality, card.repetitions || 0, card.ease || 2.5, card.interval_days || 0);
+      card.repetitions = result[0];
+      card.ease = result[1];
+      card.interval_days = result[2];
+      card.due = addDays(today(), result[2]);
+      revealed = false;
+      editing = false;
+      save();
+      render();
+    }
+
+    document.getElementById("domains").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-id]");
+      if (!button) return;
+      domainId = button.dataset.id ? Number(button.dataset.id) : null;
+      index = 0;
+      revealed = false;
+      editing = false;
+      render();
+    });
+    document.getElementById("backup").addEventListener("click", () => {
+      const blob = new Blob([JSON.stringify(db)], { type: "application/json" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "自习室进度.json";
+      link.click();
+    });
+    document.getElementById("restore").addEventListener("click", () => document.getElementById("restore-file").click());
+    document.getElementById("restore-file").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const next = JSON.parse(await file.text());
+      if (!next.cards) return;
+      db = next;
+      save();
+      index = 0;
+      revealed = false;
+      render();
+    });
+    render();
+  </script>
+</body>
+</html>

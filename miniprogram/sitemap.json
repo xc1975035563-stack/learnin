@@ -1,0 +1,7 @@
+{
+  "desc": "个人学习小程序，不收录到搜索",
+  "rules": [{
+    "action": "disallow",
+    "page": "*"
+  }]
+}

@@ -1,0 +1,190 @@
+<view class="app">
+  <view class="top">
+    <view>
+      <text class="eyebrow">一个库，两件事</text>
+      <text class="title">自习室</text>
+    </view>
+    <text class="today">{{todayLabel}}</text>
+  </view>
+
+  <view class="tabs">
+    <view class="tab {{view === 'review' ? 'on' : ''}}" data-view="review" bindtap="switchView">今日复习</view>
+    <view class="tab {{view === 'notes' ? 'on' : ''}}" data-view="notes" bindtap="switchView">笔记</view>
+    <view class="tab {{view === 'cards' ? 'on' : ''}}" data-view="cards" bindtap="switchView">卡片</view>
+    <view class="tab {{view === 'stats' ? 'on' : ''}}" data-view="stats" bindtap="switchView">统计</view>
+  </view>
+
+  <scroll-view class="domains" scroll-x enable-flex>
+    <view class="chip {{domainId === null ? 'on' : ''}}" data-id="" bindtap="switchDomain">全部</view>
+    <view
+      wx:for="{{domains}}"
+      wx:key="id"
+      class="chip {{domainId === item.id ? 'on' : ''}}"
+      data-id="{{item.id}}"
+      bindtap="switchDomain"
+    >{{item.name}}</view>
+    <view class="chip" bindtap="startDomain">+ 领域</view>
+  </scroll-view>
+
+  <view class="panel">
+    <text class="label">和电脑同步</text>
+    <input class="field" placeholder="http://192.168.x.x:8765" value="{{syncUrl}}" bindinput="onSyncUrl" />
+    <view class="btn primary" bindtap="syncNow">同步</view>
+    <text class="hint">手机和电脑连同一个 Wi-Fi。地址用电脑页面上显示的那一行。开发者工具里勾选「不校验合法域名」。两边改过的题会按时间合并。</text>
+  </view>
+
+  <view class="panel" wx:if="{{addingDomain}}">
+    <input class="field" placeholder="领域名称" value="{{domainName}}" bindinput="onDomainName" />
+    <view class="btn primary" bindtap="saveDomain">添加领域</view>
+  </view>
+
+  <block wx:if="{{view === 'review'}}">
+    <view class="study" wx:if="{{review}}">
+      <text class="progress" wx:if="{{progressText}}">{{progressText}}</text>
+      <block wx:if="{{review.empty}}">
+        <text class="kicker">今天的清单已经清空</text>
+        <text class="prompt">没有到期的卡片</text>
+        <text class="empty">{{review.emptyText}}</text>
+      </block>
+      <block wx:else>
+        <text class="kicker">{{review.kicker}}</text>
+        <block wx:if="{{reviewEditing}}">
+          <textarea class="field area" value="{{inlineFront}}" bindinput="onInlineFront" />
+          <textarea class="field area tall" value="{{inlineBack}}" bindinput="onInlineBack" />
+          <view class="actions">
+            <view class="btn primary" bindtap="saveReviewEdit">保存</view>
+            <view class="btn" bindtap="cancelReviewEdit">取消</view>
+          </view>
+        </block>
+        <block wx:else>
+        <rich-text class="prompt" nodes="{{review.frontHtml}}"></rich-text>
+        <view class="mastery" wx:if="{{review.isInterview}}">
+          <text class="label">掌握程度</text>
+          <view class="level {{review.styles[0] ? 'on' : ''}}" style="{{review.styles[0]}}" data-level="一般" data-color="{{review.mastery === '一般' ? review.styles[0] : ''}}" bindtap="setMastery">一般</view>
+          <view class="level {{review.styles[1] ? 'on' : ''}}" style="{{review.styles[1]}}" data-level="基本掌握" bindtap="setMastery">基本掌握</view>
+          <view class="level {{review.styles[2] ? 'on' : ''}}" style="{{review.styles[2]}}" data-level="熟练" bindtap="setMastery">熟练</view>
+          <view class="studied {{review.studiedToday ? 'done' : ''}}" bindtap="markStudied">今日已复习</view>
+        </view>
+        <rich-text wx:if="{{review.revealed}}" class="answer" nodes="{{review.backHtml}}"></rich-text>
+        <view class="actions">
+          <block wx:if="{{review.revealed}}">
+            <view class="rate again" data-quality="1" bindtap="rate">重来</view>
+            <view class="rate hard" data-quality="3" bindtap="rate">困难</view>
+            <view class="rate good" data-quality="4" bindtap="rate">记得</view>
+            <view class="rate easy" data-quality="5" bindtap="rate">简单</view>
+          </block>
+          <view wx:else class="btn primary" bindtap="reveal">看答案</view>
+          <view class="btn" bindtap="startReviewEdit">编辑</view>
+        </view>
+        <text class="hint">看完答案后选择重来、困难、记得或简单。</text>
+        </block>
+      </block>
+    </view>
+  </block>
+
+  <block wx:if="{{view === 'notes'}}">
+    <view class="panel">
+      <text class="label">领域</text>
+      <picker mode="selector" range="{{domainNames}}" value="{{noteForm.domainIndex}}" bindchange="onNoteDomain">
+        <view class="field">{{domainNames[noteForm.domainIndex]}}</view>
+      </picker>
+      <text class="label">标题</text>
+      <input class="field" value="{{noteForm.title}}" bindinput="onNoteTitle" />
+      <text class="label">正文</text>
+      <textarea class="field area" value="{{noteForm.body}}" bindinput="onNoteBody" />
+      <view class="row">
+        <view class="btn primary" bindtap="saveNote">{{noteForm.id ? '保存笔记' : '写下笔记'}}</view>
+        <view class="btn" wx:if="{{noteForm.id}}" bindtap="cancelNote">取消</view>
+      </view>
+      <text class="label">把问答直接做成卡片</text>
+      <textarea class="field area" placeholder="问：什么是过拟合？&#10;答：模型记住了训练集里的噪声。" value="{{importText}}" bindinput="onImportText" />
+      <view class="btn" bindtap="importCards">导入卡片</view>
+      <text class="hint">用空行分开多张卡。问/答 或 Q/A 都会识别。没有问答格式时，会存成一篇笔记。</text>
+    </view>
+    <view class="item" wx:for="{{notes}}" wx:key="id">
+      <text class="meta">{{item.domain}}</text>
+      <text class="item-title">{{item.title}}</text>
+      <rich-text nodes="{{item.bodyHtml}}"></rich-text>
+      <view class="row">
+        <view class="btn" data-id="{{item.id}}" bindtap="editNote">编辑</view>
+        <view class="btn" data-id="{{item.id}}" bindtap="noteToCard">做成卡片</view>
+        <view class="btn" data-id="{{item.id}}" bindtap="deleteNote">删除</view>
+      </view>
+    </view>
+    <text class="empty" wx:if="{{!notes.length}}">这个领域还没有笔记。</text>
+  </block>
+
+  <block wx:if="{{view === 'cards'}}">
+    <text class="progress" wx:if="{{progressText}}">{{progressText}}</text>
+    <view class="panel">
+      <text class="label">领域</text>
+      <picker mode="selector" range="{{domainNames}}" value="{{cardForm.domainIndex}}" bindchange="onCardDomain">
+        <view class="field">{{domainNames[cardForm.domainIndex]}}</view>
+      </picker>
+      <text class="label">问题 / 正面</text>
+      <input class="field" value="{{cardForm.front}}" bindinput="onCardFront" />
+      <text class="label">答案 / 背面</text>
+      <textarea class="field area" value="{{cardForm.back}}" bindinput="onCardBack" />
+      <view class="row">
+        <view class="btn primary" bindtap="saveCard">{{cardForm.id ? '保存卡片' : '加入今天的复习'}}</view>
+        <view class="btn" wx:if="{{cardForm.id || cardForm.noteId}}" bindtap="cancelCard">取消</view>
+      </view>
+    </view>
+    <view class="item" wx:for="{{cards}}" wx:key="id">
+      <text class="meta">{{item.domain}} · 下次 {{item.due}} · 间隔 {{item.interval_days}} 天</text>
+      <block wx:if="{{item.editing}}">
+        <textarea class="field area" value="{{inlineFront}}" bindinput="onInlineFront" />
+        <textarea class="field area tall" value="{{inlineBack}}" bindinput="onInlineBack" />
+        <view class="row">
+          <view class="btn primary" bindtap="saveInlineCard">保存</view>
+          <view class="btn" bindtap="cancelInlineCard">取消</view>
+        </view>
+      </block>
+      <block wx:else>
+      <rich-text nodes="{{item.frontHtml}}"></rich-text>
+      <view class="row">
+        <view class="btn" data-id="{{item.id}}" bindtap="editCard">编辑</view>
+        <view class="btn" data-id="{{item.id}}" bindtap="deleteCard">删除</view>
+      </view>
+      </block>
+      <view class="mastery" wx:if="{{item.isInterview}}">
+        <text class="label">掌握程度</text>
+        <view class="level {{item.styles[0] ? 'on' : ''}}" style="{{item.styles[0]}}" data-level="一般" data-id="{{item.id}}" bindtap="setMastery">一般</view>
+        <view class="level {{item.styles[1] ? 'on' : ''}}" style="{{item.styles[1]}}" data-level="基本掌握" data-id="{{item.id}}" bindtap="setMastery">基本掌握</view>
+        <view class="level {{item.styles[2] ? 'on' : ''}}" style="{{item.styles[2]}}" data-level="熟练" data-id="{{item.id}}" bindtap="setMastery">熟练</view>
+        <view class="studied {{item.studiedToday ? 'done' : ''}}" data-id="{{item.id}}" bindtap="markStudied">今日已复习</view>
+      </view>
+      <rich-text wx:if="{{item.open}}" nodes="{{item.backHtml}}"></rich-text>
+      <view class="row">
+        <view class="btn" data-id="{{item.id}}" bindtap="toggleCard">{{item.open ? '收起' : '看答案'}}</view>
+      </view>
+    </view>
+    <text class="empty" wx:if="{{!cards.length}}">还没有卡片。</text>
+  </block>
+
+  <block wx:if="{{view === 'stats' && stats}}">
+    <view class="stats">
+      <view class="stat"><text>连续天数</text><text class="num">{{stats.streak}}</text></view>
+      <view class="stat"><text>今天已复习</text><text class="num">{{stats.reviewed_today}}</text></view>
+      <view class="stat"><text>今天还欠</text><text class="num">{{stats.due}}</text></view>
+      <view class="stat"><text>卡片总数</text><text class="num">{{stats.total_cards}}</text></view>
+    </view>
+    <view class="panel">
+      <text class="kicker">近 7 天</text>
+      <view class="bars">
+        <view class="bar" wx:for="{{stats.days}}" wx:key="day">
+          <view class="bar-fill" style="height: {{item.height}}rpx;"></view>
+          <text>{{item.day}}</text>
+        </view>
+      </view>
+      <text class="hint">今天记住 {{stats.remembered_today}} 张（点了困难、记得或简单）。重来的卡片明天会再出现。</text>
+    </view>
+    <view class="panel">
+      <text class="kicker">各领域</text>
+      <view class="domain-line" wx:for="{{stats.domains}}" wx:key="name">
+        <text>{{item.name}}</text>
+        <text class="strong">{{item.cards}}</text>
+      </view>
+    </view>
+  </block>
+</view>
