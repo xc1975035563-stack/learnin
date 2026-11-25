@@ -2,7 +2,7 @@
   <view class="top">
     <view>
       <text class="eyebrow">一个库，两件事</text>
-      <text class="title">自习室</text>
+      <text class="title">闪记</text>
     </view>
     <text class="today">{{todayLabel}}</text>
   </view>
@@ -29,8 +29,10 @@
   <view class="panel">
     <text class="label">和电脑同步</text>
     <input class="field" placeholder="http://192.168.x.x:8765" value="{{syncUrl}}" bindinput="onSyncUrl" />
-    <view class="btn primary" bindtap="syncNow">同步</view>
-    <text class="hint">手机和电脑连同一个 Wi-Fi。地址用电脑页面上显示的那一行。开发者工具里勾选「不校验合法域名」。两边改过的题会按时间合并。</text>
+    <input class="field" placeholder="用户名" value="{{syncUser}}" bindinput="onSyncUser" />
+    <input class="field" password placeholder="密码" value="{{syncPassword}}" bindinput="onSyncPassword" />
+    <view class="btn primary" bindtap="syncNow">登录并同步</view>
+    <text class="hint">用电脑上注册的账号。两边改过的题按时间合并，只合并这个账号自己的库。</text>
   </view>
 
   <view class="panel" wx:if="{{addingDomain}}">

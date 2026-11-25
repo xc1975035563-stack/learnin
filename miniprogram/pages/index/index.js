@@ -33,6 +33,8 @@ Page({
     domainNames: [],
     todayLabel: "",
     syncUrl: "",
+    syncUser: "",
+    syncPassword: "",
     addingDomain: false,
     domainName: "",
     progressText: "",
@@ -56,6 +58,7 @@ Page({
     this.setData({
       todayLabel: todayLabel(),
       syncUrl: wx.getStorageSync("study-sync-url") || "",
+      syncUser: wx.getStorageSync("study-sync-user") || "",
     });
     this.refresh();
   },
@@ -102,18 +105,56 @@ Page({
     this.setData({ syncUrl: event.detail.value });
   },
 
+  onSyncUser(event) {
+    this.setData({ syncUser: event.detail.value });
+  },
+
+  onSyncPassword(event) {
+    this.setData({ syncPassword: event.detail.value });
+  },
+
   syncNow() {
     const url = String(this.data.syncUrl || "").trim().replace(/\/$/, "");
+    const username = String(this.data.syncUser || "").trim();
+    const password = String(this.data.syncPassword || "");
     if (!/^https?:\/\//.test(url)) {
       wx.showToast({ title: "先填写电脑上的地址", icon: "none" });
       return;
     }
+    if (!username || password.length < 6) {
+      wx.showToast({ title: "先填写电脑上的账号", icon: "none" });
+      return;
+    }
     wx.setStorageSync("study-sync-url", url);
+    wx.setStorageSync("study-sync-user", username);
     wx.showLoading({ title: "同步中" });
+    wx.request({
+      url: `${url}/api/login`,
+      method: "POST",
+      data: { username, password },
+      timeout: 20000,
+      success: (login) => {
+        if (login.statusCode !== 200 || !login.data || !login.data.token) {
+          wx.hideLoading();
+          wx.showToast({ title: "账号或密码不对", icon: "none" });
+          return;
+        }
+        wx.setStorageSync("study-token", login.data.token);
+        this.pushSync(url, login.data.token);
+      },
+      fail: () => {
+        wx.hideLoading();
+        wx.showToast({ title: "连不上电脑，确认同一 Wi-Fi", icon: "none" });
+      },
+    });
+  },
+
+  pushSync(url, token) {
     wx.request({
       url: `${url}/api/sync`,
       method: "POST",
       data: store.snapshot(),
+      header: { Authorization: `Bearer ${token}` },
       timeout: 20000,
       success: (res) => {
         wx.hideLoading();

@@ -75,39 +75,99 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
 
 
-def _rows(conn: sqlite3.Connection, sql: str) -> list[dict]:
-    return [dict(row) for row in conn.execute(sql)]
+def _rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict]:
+    return [dict(row) for row in conn.execute(sql, params)]
 
 
-def export_state(conn: sqlite3.Connection) -> dict:
+def export_state(conn: sqlite3.Connection, user_id: int | None = None) -> dict:
     ensure_schema(conn)
-    domains = _rows(conn, "SELECT id, uid, name, created_at FROM domains ORDER BY id")
-    notes = _rows(
-        conn,
-        "SELECT id, uid, domain_id, title, body, created_at, updated_at FROM notes ORDER BY id",
-    )
-    cards = _rows(
-        conn,
-        """
-        SELECT id, uid, domain_id, note_id, front, back, ease, interval_days, repetitions,
-               due, created_at, mastery, mastery_color, content_at, schedule_at
-        FROM cards ORDER BY id
-        """,
-    )
+    if user_id is None:
+        domains = _rows(conn, "SELECT id, uid, name, created_at FROM domains ORDER BY id")
+        notes = _rows(
+            conn,
+            "SELECT id, uid, domain_id, title, body, created_at, updated_at FROM notes ORDER BY id",
+        )
+        cards = _rows(
+            conn,
+            """
+            SELECT id, uid, domain_id, note_id, front, back, ease, interval_days, repetitions,
+                   due, created_at, mastery, mastery_color, content_at, schedule_at
+            FROM cards ORDER BY id
+            """,
+        )
+        studied_rows = conn.execute("SELECT card_id, day FROM daily_reads ORDER BY day")
+        tombstones = _rows(conn, "SELECT kind, uid, deleted_at FROM tombstones ORDER BY deleted_at")
+        reviews = _rows(
+            conn,
+            """
+            SELECT id, uid, card_id, quality, reviewed_at, interval_after, ease_after
+            FROM reviews ORDER BY id
+            """,
+        )
+    else:
+        domains = _rows(
+            conn,
+            "SELECT id, uid, name, created_at FROM domains WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        )
+        notes = _rows(
+            conn,
+            """
+            SELECT notes.id, notes.uid, notes.domain_id, notes.title, notes.body,
+                   notes.created_at, notes.updated_at
+            FROM notes JOIN domains ON domains.id = notes.domain_id
+            WHERE domains.user_id = ?
+            ORDER BY notes.id
+            """,
+            (user_id,),
+        )
+        cards = _rows(
+            conn,
+            """
+            SELECT cards.id, cards.uid, cards.domain_id, cards.note_id, cards.front, cards.back,
+                   cards.ease, cards.interval_days, cards.repetitions, cards.due, cards.created_at,
+                   cards.mastery, cards.mastery_color, cards.content_at, cards.schedule_at
+            FROM cards JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ?
+            ORDER BY cards.id
+            """,
+            (user_id,),
+        )
+        studied_rows = conn.execute(
+            """
+            SELECT daily_reads.card_id, daily_reads.day
+            FROM daily_reads
+            JOIN cards ON cards.id = daily_reads.card_id
+            JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ?
+            ORDER BY daily_reads.day
+            """,
+            (user_id,),
+        )
+        tombstones = _rows(
+            conn,
+            "SELECT kind, uid, deleted_at FROM tombstones WHERE user_id = ? ORDER BY deleted_at",
+            (user_id,),
+        )
+        reviews = _rows(
+            conn,
+            """
+            SELECT reviews.id, reviews.uid, reviews.card_id, reviews.quality, reviews.reviewed_at,
+                   reviews.interval_after, reviews.ease_after
+            FROM reviews
+            JOIN cards ON cards.id = reviews.card_id
+            JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ?
+            ORDER BY reviews.id
+            """,
+            (user_id,),
+        )
     studied: dict[int, list[str]] = {}
-    for row in conn.execute("SELECT card_id, day FROM daily_reads ORDER BY day"):
+    for row in studied_rows:
         studied.setdefault(row["card_id"], []).append(row["day"])
     for card in cards:
         card["studied_days"] = studied.get(card["id"], [])
         card["mastery"] = card["mastery"] or "一般"
-    reviews = _rows(
-        conn,
-        """
-        SELECT id, uid, card_id, quality, reviewed_at, interval_after, ease_after
-        FROM reviews ORDER BY id
-        """,
-    )
-    tombstones = _rows(conn, "SELECT kind, uid, deleted_at FROM tombstones ORDER BY deleted_at")
 
     def nxt(items: list[dict]) -> int:
         return max((item["id"] for item in items), default=0) + 1
@@ -350,32 +410,76 @@ def merge_state(server: dict, client: dict) -> dict:
     }
 
 
-def import_state(conn: sqlite3.Connection, state: dict) -> None:
+def _allocate(conn: sqlite3.Connection, table: str, wanted: int | None) -> int:
+    if wanted:
+        taken = conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (wanted,)).fetchone()
+        if not taken:
+            return wanted
+    return conn.execute(f"SELECT COALESCE(MAX(id), 0) + 1 AS n FROM {table}").fetchone()["n"]
+
+
+def import_state(conn: sqlite3.Connection, state: dict, user_id: int | None = None) -> None:
     ensure_schema(conn)
     conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("DELETE FROM reviews")
-    conn.execute("DELETE FROM daily_reads")
-    conn.execute("DELETE FROM cards")
-    conn.execute("DELETE FROM notes")
-    conn.execute("DELETE FROM domains")
-    conn.execute("DELETE FROM tombstones")
-    for domain in state["domains"]:
+    if user_id is None:
+        conn.execute("DELETE FROM reviews")
+        conn.execute("DELETE FROM daily_reads")
+        conn.execute("DELETE FROM cards")
+        conn.execute("DELETE FROM notes")
+        conn.execute("DELETE FROM domains")
+        conn.execute("DELETE FROM tombstones")
+    else:
+        owned_cards = """
+            SELECT cards.id FROM cards
+            JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ?
+        """
+        conn.execute(f"DELETE FROM reviews WHERE card_id IN ({owned_cards})", (user_id,))
+        conn.execute(f"DELETE FROM daily_reads WHERE card_id IN ({owned_cards})", (user_id,))
         conn.execute(
-            "INSERT INTO domains (id, uid, name, created_at) VALUES (?, ?, ?, ?)",
-            (domain["id"], domain["uid"], domain["name"], domain["created_at"]),
+            "DELETE FROM cards WHERE domain_id IN (SELECT id FROM domains WHERE user_id = ?)",
+            (user_id,),
         )
+        conn.execute(
+            "DELETE FROM notes WHERE domain_id IN (SELECT id FROM domains WHERE user_id = ?)",
+            (user_id,),
+        )
+        conn.execute("DELETE FROM domains WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM tombstones WHERE user_id = ?", (user_id,))
+
+    domain_ids: dict[int, int] = {}
+    for domain in state["domains"]:
+        new_id = _allocate(conn, "domains", domain["id"])
+        domain_ids[domain["id"]] = new_id
+        conn.execute(
+            "INSERT INTO domains (id, uid, name, created_at, user_id) VALUES (?, ?, ?, ?, ?)",
+            (new_id, domain["uid"], domain["name"], domain["created_at"], user_id),
+        )
+    note_ids: dict[int, int] = {}
     for note in state["notes"]:
+        domain_id = domain_ids.get(note["domain_id"])
+        if not domain_id:
+            continue
+        new_id = _allocate(conn, "notes", note["id"])
+        note_ids[note["id"]] = new_id
         conn.execute(
             """
             INSERT INTO notes (id, uid, domain_id, title, body, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                note["id"], note["uid"], note["domain_id"], note["title"], note["body"],
+                new_id, note["uid"], domain_id, note["title"], note["body"],
                 note["created_at"], note["updated_at"],
             ),
         )
+    card_ids: dict[int, int] = {}
     for card in state["cards"]:
+        domain_id = domain_ids.get(card["domain_id"])
+        if not domain_id:
+            continue
+        new_id = _allocate(conn, "cards", card["id"])
+        card_ids[card["id"]] = new_id
+        note_id = note_ids.get(card["note_id"]) if card.get("note_id") else None
         conn.execute(
             """
             INSERT INTO cards (
@@ -384,7 +488,7 @@ def import_state(conn: sqlite3.Connection, state: dict) -> None:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                card["id"], card["uid"], card["domain_id"], card.get("note_id"), card["front"], card["back"],
+                new_id, card["uid"], domain_id, note_id, card["front"], card["back"],
                 card["ease"], card["interval_days"], card["repetitions"], card["due"], card["created_at"],
                 card.get("mastery") or "一般", card.get("mastery_color") or "", card["content_at"], card["schedule_at"],
             ),
@@ -392,23 +496,27 @@ def import_state(conn: sqlite3.Connection, state: dict) -> None:
         for day in card.get("studied_days") or []:
             conn.execute(
                 "INSERT OR IGNORE INTO daily_reads (card_id, day) VALUES (?, ?)",
-                (card["id"], day),
+                (new_id, day),
             )
     for review in state["reviews"]:
+        card_id = card_ids.get(review["card_id"])
+        if not card_id:
+            continue
+        new_id = _allocate(conn, "reviews", review["id"])
         conn.execute(
             """
             INSERT INTO reviews (id, uid, card_id, quality, reviewed_at, interval_after, ease_after)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                review["id"], review["uid"], review["card_id"], review["quality"], review["reviewed_at"],
+                new_id, review["uid"], card_id, review["quality"], review["reviewed_at"],
                 review["interval_after"], review["ease_after"],
             ),
         )
     for tomb in state["tombstones"]:
         conn.execute(
-            "INSERT INTO tombstones (kind, uid, deleted_at) VALUES (?, ?, ?)",
-            (tomb["kind"], tomb["uid"], tomb["deleted_at"]),
+            "INSERT INTO tombstones (kind, uid, deleted_at, user_id) VALUES (?, ?, ?, ?)",
+            (tomb["kind"], tomb["uid"], tomb["deleted_at"], user_id),
         )
     conn.execute("PRAGMA foreign_keys = ON")
 

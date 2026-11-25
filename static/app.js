@@ -51,17 +51,74 @@ document.addEventListener("keydown", (event) => {
   if (quality && state.revealed) rate(quality);
 });
 
+function token() {
+  return localStorage.getItem("study-token") || "";
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (token()) headers.Authorization = `Bearer ${token()}`;
+  const response = await fetch(path, { ...options, headers });
+  if (response.status === 401) {
+    localStorage.removeItem("study-token");
+    showGate();
+  }
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
     throw new Error(detail.detail || "请求失败");
   }
   return response.json();
 }
+
+let registering = false;
+
+function showGate() {
+  document.querySelector("#gate").hidden = false;
+  document.querySelector("#desk").hidden = true;
+  document.querySelector("#logout").hidden = true;
+}
+
+function showDesk(username) {
+  document.querySelector("#gate").hidden = true;
+  document.querySelector("#desk").hidden = false;
+  const logout = document.querySelector("#logout");
+  logout.hidden = false;
+  logout.textContent = `${username} · 退出`;
+}
+
+document.querySelector("#auth-switch").addEventListener("click", () => {
+  registering = !registering;
+  document.querySelector("#auth-submit").textContent = registering ? "注册" : "登录";
+  document.querySelector("#auth-switch").textContent = registering ? "已有账号，去登录" : "没有账号，去注册";
+  document.querySelector("#gate-title").textContent = registering ? "注册一个自己的题库" : "登录后才能看到自己的题库";
+});
+
+document.querySelector("#auth-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  try {
+    const result = await api(registering ? "/api/register" : "/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: form.get("username"), password: form.get("password") }),
+    });
+    localStorage.setItem("study-token", result.token);
+    showDesk(result.username);
+    await loadDomains();
+    render();
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+document.querySelector("#logout").addEventListener("click", async () => {
+  try {
+    await api("/api/logout", { method: "POST", body: "{}" });
+  } catch {
+    /* 本地直接退出 */
+  }
+  localStorage.removeItem("study-token");
+  showGate();
+});
 
 function toast(message) {
   toastEl.hidden = false;
@@ -631,6 +688,20 @@ async function renderStats() {
     </section>`;
 }
 
-loadDomains().then(render).catch((error) => {
-  viewEl.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
-});
+async function boot() {
+  if (!token()) {
+    showGate();
+    return;
+  }
+  try {
+    const me = await api("/api/me");
+    showDesk(me.username);
+    await loadDomains();
+    render();
+  } catch (error) {
+    showGate();
+    if (error.message && error.message !== "请先登录") toast(error.message);
+  }
+}
+
+boot();

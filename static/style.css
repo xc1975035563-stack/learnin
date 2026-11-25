@@ -54,6 +54,8 @@ h1 {
 }
 
 .today { margin: 0; color: var(--muted); }
+.account { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.gate { margin-top: 22px; }
 
 .tabs {
   display: flex;

@@ -1,7 +1,7 @@
 {
   "miniprogramRoot": "miniprogram/",
   "projectname": "study-room",
-  "description": "自习室背题小程序",
+  "description": "闪记背题小程序",
   "appid": "wxe15b237243385c2a",
   "compileType": "miniprogram",
   "libVersion": "3.5.5",

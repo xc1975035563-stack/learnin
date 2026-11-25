@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>自习室</title>
+  <title>闪记</title>
   <style>
     :root { color-scheme: light; }
     * { box-sizing: border-box; }
@@ -43,7 +43,7 @@
 </head>
 <body>
   <div class="app">
-    <h1>自习室</h1>
+    <h1>闪记</h1>
     <p class="hint" id="status"></p>
     <div class="chips" id="domains"></div>
     <p class="progress" id="progress"></p>
@@ -232,7 +232,7 @@
       const blob = new Blob([JSON.stringify(db)], { type: "application/json" });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = "自习室进度.json";
+      link.download = "闪记进度.json";
       link.click();
     });
     document.getElementById("restore").addEventListener("click", () => document.getElementById("restore-file").click());

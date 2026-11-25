@@ -1,7 +1,7 @@
 {
   "pages": ["pages/index/index"],
   "window": {
-    "navigationBarTitleText": "自习室",
+    "navigationBarTitleText": "闪记",
     "navigationBarBackgroundColor": "#f3ecdf",
     "navigationBarTextStyle": "black",
     "backgroundColor": "#f3ecdf",

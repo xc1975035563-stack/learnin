@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from auth import claim_unowned, ensure_accounts, hash_password, new_token, verify_password
 from sm2 import schedule
 from sync import client_payload, ensure_schema, export_state, import_state, lan_addresses, merge_state
 
@@ -19,12 +21,22 @@ DATA = ROOT / "data"
 DB_PATH = DATA / "learn.db"
 STATIC = ROOT / "static"
 
-app = FastAPI(title="自习室")
+app = FastAPI(title="闪记")
+
+
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
 
 
 def connect() -> sqlite3.Connection:
     DATA.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    path = Path(os.environ["LEARN_DB"]) if os.environ.get("LEARN_DB") else DB_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -81,10 +93,11 @@ def init_db() -> None:
             )
             """
         )
+        ensure_schema(conn)
         count = conn.execute("SELECT COUNT(*) AS n FROM domains").fetchone()["n"]
         if count == 0:
             seed(conn)
-        ensure_schema(conn)
+        ensure_accounts(conn)
 
 
 def now_iso() -> str:
@@ -177,6 +190,11 @@ class ReviewIn(BaseModel):
     quality: int = Field(ge=0, le=5)
 
 
+class AuthIn(BaseModel):
+    username: str = Field(min_length=1, max_length=32)
+    password: str = Field(min_length=6, max_length=80)
+
+
 class ImportIn(BaseModel):
     domain_id: int
     text: str = Field(min_length=1)
@@ -224,7 +242,10 @@ class MasteryIn(BaseModel):
     color: str = ""
 
 
-def select_cards(conn: sqlite3.Connection, where: str, params: list) -> list[sqlite3.Row]:
+def select_cards(conn: sqlite3.Connection, where: str, params: list, user_id: int) -> list[sqlite3.Row]:
+    clause = where.strip()
+    if clause.upper().startswith("WHERE"):
+        clause = "AND " + clause[5:].strip()
     sql = f"""
         SELECT cards.*, domains.name AS domain,
           EXISTS(
@@ -232,9 +253,10 @@ def select_cards(conn: sqlite3.Connection, where: str, params: list) -> list[sql
             WHERE daily_reads.card_id = cards.id AND daily_reads.day = ?
           ) AS studied_today
         FROM cards JOIN domains ON domains.id = cards.domain_id
-        {where}
+        WHERE domains.user_id = ?
+        {clause}
     """
-    return conn.execute(sql, [today().isoformat(), *params]).fetchall()
+    return conn.execute(sql, [today().isoformat(), user_id, *params]).fetchall()
 
 
 def domain_progress(conn: sqlite3.Connection, domain_id: int) -> dict:
@@ -254,10 +276,52 @@ def domain_progress(conn: sqlite3.Connection, domain_id: int) -> dict:
     return {"reviewed": reviewed, "total": total}
 
 
-def require_domain(conn: sqlite3.Connection, domain_id: int) -> None:
-    found = conn.execute("SELECT id FROM domains WHERE id = ?", (domain_id,)).fetchone()
+def require_user(authorization: str | None = Header(default=None)) -> int:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, "请先登录")
+    token = authorization.split(" ", 1)[1].strip()
+    with connect() as conn:
+        row = conn.execute("SELECT user_id FROM sessions WHERE token = ?", (token,)).fetchone()
+    if not row:
+        raise HTTPException(401, "请先登录")
+    return row["user_id"]
+
+
+def require_domain(conn: sqlite3.Connection, domain_id: int, user_id: int) -> None:
+    found = conn.execute(
+        "SELECT id FROM domains WHERE id = ? AND user_id = ?",
+        (domain_id, user_id),
+    ).fetchone()
     if not found:
         raise HTTPException(404, "领域不存在")
+
+
+def require_note(conn: sqlite3.Connection, note_id: int, user_id: int) -> sqlite3.Row:
+    row = conn.execute(
+        """
+        SELECT notes.* FROM notes
+        JOIN domains ON domains.id = notes.domain_id
+        WHERE notes.id = ? AND domains.user_id = ?
+        """,
+        (note_id, user_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "笔记不存在")
+    return row
+
+
+def require_card(conn: sqlite3.Connection, card_id: int, user_id: int) -> sqlite3.Row:
+    row = conn.execute(
+        """
+        SELECT cards.* FROM cards
+        JOIN domains ON domains.id = cards.domain_id
+        WHERE cards.id = ? AND domains.user_id = ?
+        """,
+        (card_id, user_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "卡片不存在")
+    return row
 
 
 def parse_cards(text: str) -> list[tuple[str, str]]:
@@ -302,25 +366,93 @@ def index() -> FileResponse:
     return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
-@app.get("/api/domains")
-def list_domains() -> list[dict]:
+def _clean_username(username: str) -> str:
+    name = username.strip()
+    if not name:
+        raise HTTPException(400, "用户名不能为空")
+    return name
+
+
+@app.post("/api/register")
+def register(payload: AuthIn) -> dict:
+    username = _clean_username(payload.username)
+    stamp = now_iso()
     with connect() as conn:
-        rows = conn.execute("SELECT id, name FROM domains ORDER BY id").fetchall()
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+                (username, hash_password(payload.password), stamp),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(400, "这个用户名已经有了") from None
+        user_id = cur.lastrowid
+        claim_unowned(conn, user_id)
+        token = new_token()
+        conn.execute(
+            "INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)",
+            (token, user_id, stamp),
+        )
+    return {"token": token, "username": username}
+
+
+@app.post("/api/login")
+def login(payload: AuthIn) -> dict:
+    username = _clean_username(payload.username)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, password_hash FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if not row or not verify_password(payload.password, row["password_hash"]):
+            raise HTTPException(401, "用户名或密码不对")
+        token = new_token()
+        conn.execute(
+            "INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)",
+            (token, row["id"], now_iso()),
+        )
+    return {"token": token, "username": username}
+
+
+@app.post("/api/logout")
+def logout(user_id: int = Depends(require_user), authorization: str | None = Header(default=None)) -> dict:
+    token = (authorization or "").split(" ", 1)[-1].strip()
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE token = ? AND user_id = ?", (token, user_id))
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def me(user_id: int = Depends(require_user)) -> dict:
+    with connect() as conn:
+        row = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+    return {"username": row["username"]}
+
+
+@app.get("/api/domains")
+def list_domains(user_id: int = Depends(require_user)) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name FROM domains WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        ).fetchall()
     return [row_domain(row) for row in rows]
 
 
 @app.post("/api/domains")
-def create_domain(payload: DomainIn) -> dict:
+def create_domain(payload: DomainIn, user_id: int = Depends(require_user)) -> dict:
     name = payload.name.strip()
     if not name:
         raise HTTPException(400, "名称不能为空")
     with connect() as conn:
         try:
             cur = conn.execute(
-                "INSERT INTO domains (name, created_at, uid) VALUES (?, ?, ?)",
-                (name, now_iso(), ""),
+                "INSERT INTO domains (name, created_at, uid, user_id) VALUES (?, ?, ?, ?)",
+                (name, now_iso(), "", user_id),
             )
-            conn.execute("UPDATE domains SET uid = ? WHERE id = ?", (f"pc-{cur.lastrowid}", cur.lastrowid))
+            conn.execute(
+                "UPDATE domains SET uid = ? WHERE id = ?",
+                (f"u{user_id}-{cur.lastrowid}", cur.lastrowid),
+            )
         except sqlite3.IntegrityError:
             raise HTTPException(400, "这个领域已经有了") from None
         row = conn.execute("SELECT id, name FROM domains WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -328,24 +460,24 @@ def create_domain(payload: DomainIn) -> dict:
 
 
 @app.delete("/api/domains/{domain_id}")
-def delete_domain(domain_id: int) -> dict:
+def delete_domain(domain_id: int, user_id: int = Depends(require_user)) -> dict:
     with connect() as conn:
-        cur = conn.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
-        if cur.rowcount == 0:
-            raise HTTPException(404, "领域不存在")
+        require_domain(conn, domain_id, user_id)
+        conn.execute("DELETE FROM domains WHERE id = ? AND user_id = ?", (domain_id, user_id))
     return {"ok": True}
 
 
 @app.get("/api/notes")
-def list_notes(domain_id: int | None = None) -> list[dict]:
+def list_notes(domain_id: int | None = None, user_id: int = Depends(require_user)) -> list[dict]:
     sql = """
         SELECT notes.*, domains.name AS domain
         FROM notes JOIN domains ON domains.id = notes.domain_id
+        WHERE domains.user_id = ?
     """
-    params: tuple = ()
+    params: list = [user_id]
     if domain_id is not None:
-        sql += " WHERE notes.domain_id = ?"
-        params = (domain_id,)
+        sql += " AND notes.domain_id = ?"
+        params.append(domain_id)
     sql += " ORDER BY notes.updated_at DESC"
     with connect() as conn:
         rows = conn.execute(sql, params).fetchall()
@@ -353,15 +485,15 @@ def list_notes(domain_id: int | None = None) -> list[dict]:
 
 
 @app.post("/api/notes")
-def create_note(payload: NoteIn) -> dict:
+def create_note(payload: NoteIn, user_id: int = Depends(require_user)) -> dict:
     stamp = now_iso()
     with connect() as conn:
-        require_domain(conn, payload.domain_id)
+        require_domain(conn, payload.domain_id, user_id)
         cur = conn.execute(
             "INSERT INTO notes (domain_id, title, body, created_at, updated_at, uid) VALUES (?, ?, ?, ?, ?, ?)",
             (payload.domain_id, payload.title.strip(), payload.body.strip(), stamp, stamp, ""),
         )
-        conn.execute("UPDATE notes SET uid = ? WHERE id = ?", (f"pc-{cur.lastrowid}", cur.lastrowid))
+        conn.execute("UPDATE notes SET uid = ? WHERE id = ?", (f"u{user_id}-{cur.lastrowid}", cur.lastrowid))
         row = conn.execute(
             """
             SELECT notes.*, domains.name AS domain
@@ -374,9 +506,10 @@ def create_note(payload: NoteIn) -> dict:
 
 
 @app.put("/api/notes/{note_id}")
-def update_note(note_id: int, payload: NoteIn) -> dict:
+def update_note(note_id: int, payload: NoteIn, user_id: int = Depends(require_user)) -> dict:
     with connect() as conn:
-        require_domain(conn, payload.domain_id)
+        require_note(conn, note_id, user_id)
+        require_domain(conn, payload.domain_id, user_id)
         cur = conn.execute(
             "UPDATE notes SET domain_id = ?, title = ?, body = ?, updated_at = ? WHERE id = ?",
             (payload.domain_id, payload.title.strip(), payload.body.strip(), now_iso(), note_id),
@@ -395,35 +528,33 @@ def update_note(note_id: int, payload: NoteIn) -> dict:
 
 
 @app.delete("/api/notes/{note_id}")
-def delete_note(note_id: int) -> dict:
+def delete_note(note_id: int, user_id: int = Depends(require_user)) -> dict:
     with connect() as conn:
-        row = conn.execute("SELECT uid FROM notes WHERE id = ?", (note_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "笔记不存在")
+        row = require_note(conn, note_id, user_id)
         conn.execute(
-            "INSERT OR REPLACE INTO tombstones (kind, uid, deleted_at) VALUES ('note', ?, ?)",
-            (row["uid"], now_iso()),
+            "INSERT OR REPLACE INTO tombstones (kind, uid, deleted_at, user_id) VALUES ('note', ?, ?, ?)",
+            (row["uid"], now_iso(), user_id),
         )
         conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
     return {"ok": True}
 
 
 @app.get("/api/cards")
-def list_cards(domain_id: int | None = None) -> list[dict]:
+def list_cards(domain_id: int | None = None, user_id: int = Depends(require_user)) -> list[dict]:
     where = "ORDER BY cards.due, cards.id"
     params: list = []
     if domain_id is not None:
         where = "WHERE cards.domain_id = ? ORDER BY cards.due, cards.id"
         params = [domain_id]
     with connect() as conn:
-        rows = select_cards(conn, where, params)
+        rows = select_cards(conn, where, params, user_id)
     return [row_card(row) for row in rows]
 
 
 @app.post("/api/cards")
-def create_card(payload: CardIn) -> dict:
+def create_card(payload: CardIn, user_id: int = Depends(require_user)) -> dict:
     with connect() as conn:
-        require_domain(conn, payload.domain_id)
+        require_domain(conn, payload.domain_id, user_id)
         stamp = now_iso()
         cur = conn.execute(
             """
@@ -442,41 +573,40 @@ def create_card(payload: CardIn) -> dict:
                 stamp,
             ),
         )
-        conn.execute("UPDATE cards SET uid = ? WHERE id = ?", (f"pc-{cur.lastrowid}", cur.lastrowid))
-        row = select_cards(conn, "WHERE cards.id = ?", [cur.lastrowid])[0]
+        conn.execute("UPDATE cards SET uid = ? WHERE id = ?", (f"u{user_id}-{cur.lastrowid}", cur.lastrowid))
+        row = select_cards(conn, "WHERE cards.id = ?", [cur.lastrowid], user_id)[0]
     return row_card(row)
 
 
 @app.put("/api/cards/{card_id}")
-def update_card(card_id: int, payload: CardIn) -> dict:
+def update_card(card_id: int, payload: CardIn, user_id: int = Depends(require_user)) -> dict:
     with connect() as conn:
-        require_domain(conn, payload.domain_id)
+        require_card(conn, card_id, user_id)
+        require_domain(conn, payload.domain_id, user_id)
         cur = conn.execute(
             "UPDATE cards SET domain_id = ?, note_id = ?, front = ?, back = ?, content_at = ? WHERE id = ?",
             (payload.domain_id, payload.note_id, payload.front.strip(), payload.back.strip(), now_iso(), card_id),
         )
         if cur.rowcount == 0:
             raise HTTPException(404, "卡片不存在")
-        rows = select_cards(conn, "WHERE cards.id = ?", [card_id])
+        rows = select_cards(conn, "WHERE cards.id = ?", [card_id], user_id)
     return row_card(rows[0])
 
 
 @app.delete("/api/cards/{card_id}")
-def delete_card(card_id: int) -> dict:
+def delete_card(card_id: int, user_id: int = Depends(require_user)) -> dict:
     with connect() as conn:
-        row = conn.execute("SELECT uid FROM cards WHERE id = ?", (card_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "卡片不存在")
+        row = require_card(conn, card_id, user_id)
         conn.execute(
-            "INSERT OR REPLACE INTO tombstones (kind, uid, deleted_at) VALUES ('card', ?, ?)",
-            (row["uid"], now_iso()),
+            "INSERT OR REPLACE INTO tombstones (kind, uid, deleted_at, user_id) VALUES ('card', ?, ?, ?)",
+            (row["uid"], now_iso(), user_id),
         )
         conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
     return {"ok": True}
 
 
 @app.get("/api/review")
-def review_queue(domain_id: int | None = None) -> dict:
+def review_queue(domain_id: int | None = None, user_id: int = Depends(require_user)) -> dict:
     where = "WHERE cards.due <= ?"
     params: list = [today().isoformat()]
     if domain_id is not None:
@@ -484,10 +614,14 @@ def review_queue(domain_id: int | None = None) -> dict:
         params.append(domain_id)
     where += " ORDER BY cards.due, cards.id"
     with connect() as conn:
-        rows = select_cards(conn, where, params)
+        rows = select_cards(conn, where, params, user_id)
         nxt = conn.execute(
-            "SELECT MIN(due) AS due FROM cards WHERE due > ?",
-            (today().isoformat(),),
+            """
+            SELECT MIN(cards.due) AS due
+            FROM cards JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ? AND cards.due > ?
+            """,
+            (user_id, today().isoformat()),
         ).fetchone()
     return {
         "due_on": today().isoformat(),
@@ -497,11 +631,9 @@ def review_queue(domain_id: int | None = None) -> dict:
 
 
 @app.post("/api/cards/{card_id}/review")
-def review_card(card_id: int, payload: ReviewIn) -> dict:
+def review_card(card_id: int, payload: ReviewIn, user_id: int = Depends(require_user)) -> dict:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "卡片不存在")
+        row = require_card(conn, card_id, user_id)
         repetitions, ease, interval = schedule(
             payload.quality,
             row["repetitions"],
@@ -526,16 +658,17 @@ def review_card(card_id: int, payload: ReviewIn) -> dict:
         )
         conn.execute(
             "UPDATE reviews SET uid = ? WHERE id = ?",
-            (f"pc-{review.lastrowid}", review.lastrowid),
+            (f"u{user_id}-{review.lastrowid}", review.lastrowid),
         )
     return {"due": due, "interval_days": interval, "ease": ease, "repetitions": repetitions}
 
 
 @app.post("/api/cards/{card_id}/mastery")
-def set_mastery(card_id: int, payload: MasteryIn) -> dict:
+def set_mastery(card_id: int, payload: MasteryIn, user_id: int = Depends(require_user)) -> dict:
     if payload.level not in LEVELS:
         raise HTTPException(400, "掌握程度只能是一般、基本掌握或熟练")
     with connect() as conn:
+        require_card(conn, card_id, user_id)
         color = payload.color if payload.color.startswith("#") and len(payload.color) == 7 else ""
         cur = conn.execute(
             "UPDATE cards SET mastery = ?, mastery_color = ?, content_at = ? WHERE id = ?",
@@ -547,12 +680,10 @@ def set_mastery(card_id: int, payload: MasteryIn) -> dict:
 
 
 @app.post("/api/cards/{card_id}/studied")
-def mark_studied(card_id: int) -> dict:
+def mark_studied(card_id: int, user_id: int = Depends(require_user)) -> dict:
     day = today().isoformat()
     with connect() as conn:
-        row = conn.execute("SELECT domain_id FROM cards WHERE id = ?", (card_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "卡片不存在")
+        row = require_card(conn, card_id, user_id)
         cur = conn.execute(
             "INSERT OR IGNORE INTO daily_reads (card_id, day) VALUES (?, ?)",
             (card_id, day),
@@ -562,19 +693,19 @@ def mark_studied(card_id: int) -> dict:
 
 
 @app.get("/api/progress")
-def progress(domain_id: int) -> dict:
+def progress(domain_id: int, user_id: int = Depends(require_user)) -> dict:
     with connect() as conn:
-        require_domain(conn, domain_id)
+        require_domain(conn, domain_id, user_id)
         return domain_progress(conn, domain_id)
 
 
 @app.post("/api/import")
-def import_text(payload: ImportIn) -> dict:
+def import_text(payload: ImportIn, user_id: int = Depends(require_user)) -> dict:
     cards = parse_cards(payload.text)
     stamp = now_iso()
     due = today().isoformat()
     with connect() as conn:
-        require_domain(conn, payload.domain_id)
+        require_domain(conn, payload.domain_id, user_id)
         if cards:
             for front, back in cards:
                 cur = conn.execute(
@@ -585,14 +716,14 @@ def import_text(payload: ImportIn) -> dict:
                     """,
                     (payload.domain_id, front, back, due, stamp, stamp, stamp),
                 )
-                conn.execute("UPDATE cards SET uid = ? WHERE id = ?", (f"pc-{cur.lastrowid}", cur.lastrowid))
+                conn.execute("UPDATE cards SET uid = ? WHERE id = ?", (f"u{user_id}-{cur.lastrowid}", cur.lastrowid))
             return {"cards": len(cards), "notes": 0}
         title = payload.as_note_title.strip() or "导入的笔记"
         cur = conn.execute(
             "INSERT INTO notes (domain_id, title, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
             (payload.domain_id, title, payload.text.strip(), stamp, stamp),
         )
-        conn.execute("UPDATE notes SET uid = ? WHERE id = ?", (f"pc-{cur.lastrowid}", cur.lastrowid))
+        conn.execute("UPDATE notes SET uid = ? WHERE id = ?", (f"u{user_id}-{cur.lastrowid}", cur.lastrowid))
     return {"cards": 0, "notes": 1}
 
 
@@ -613,41 +744,73 @@ def streak_from(dates: list[str]) -> int:
 
 
 @app.get("/api/stats")
-def stats() -> dict:
+def stats(user_id: int = Depends(require_user)) -> dict:
     start = today() - timedelta(days=6)
     with connect() as conn:
-        total = conn.execute("SELECT COUNT(*) AS n FROM cards").fetchone()["n"]
+        total = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM cards
+            JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()["n"]
         due = conn.execute(
-            "SELECT COUNT(*) AS n FROM cards WHERE due <= ?",
-            (today().isoformat(),),
+            """
+            SELECT COUNT(*) AS n FROM cards
+            JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ? AND cards.due <= ?
+            """,
+            (user_id, today().isoformat()),
         ).fetchone()["n"]
         reviewed_today = conn.execute(
-            "SELECT COUNT(*) AS n FROM reviews WHERE reviewed_at >= ?",
-            (today().isoformat(),),
+            """
+            SELECT COUNT(*) AS n FROM reviews
+            JOIN cards ON cards.id = reviews.card_id
+            JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ? AND reviews.reviewed_at >= ?
+            """,
+            (user_id, today().isoformat()),
         ).fetchone()["n"]
         remembered = conn.execute(
-            "SELECT COUNT(*) AS n FROM reviews WHERE reviewed_at >= ? AND quality >= 3",
-            (today().isoformat(),),
+            """
+            SELECT COUNT(*) AS n FROM reviews
+            JOIN cards ON cards.id = reviews.card_id
+            JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ? AND reviews.reviewed_at >= ? AND reviews.quality >= 3
+            """,
+            (user_id, today().isoformat()),
         ).fetchone()["n"]
         by_domain = conn.execute(
             """
             SELECT domains.name AS name, COUNT(cards.id) AS cards
             FROM domains LEFT JOIN cards ON cards.domain_id = domains.id
+            WHERE domains.user_id = ?
             GROUP BY domains.id
             ORDER BY domains.id
-            """
+            """,
+            (user_id,),
         ).fetchall()
         recent = conn.execute(
             """
-            SELECT substr(reviewed_at, 1, 10) AS day, COUNT(*) AS n
+            SELECT substr(reviews.reviewed_at, 1, 10) AS day, COUNT(*) AS n
             FROM reviews
-            WHERE reviewed_at >= ?
+            JOIN cards ON cards.id = reviews.card_id
+            JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ? AND reviews.reviewed_at >= ?
             GROUP BY day
             """,
-            (start.isoformat(),),
+            (user_id, start.isoformat()),
         ).fetchall()
         all_days = conn.execute(
-            "SELECT DISTINCT substr(reviewed_at, 1, 10) AS day FROM reviews"
+            """
+            SELECT DISTINCT substr(reviews.reviewed_at, 1, 10) AS day
+            FROM reviews
+            JOIN cards ON cards.id = reviews.card_id
+            JOIN domains ON domains.id = cards.domain_id
+            WHERE domains.user_id = ?
+            """,
+            (user_id,),
         ).fetchall()
     counts = {row["day"]: row["n"] for row in recent}
     days = []
@@ -671,16 +834,16 @@ def info() -> dict:
 
 
 @app.post("/api/sync")
-def sync_library(payload: dict) -> dict:
+def sync_library(payload: dict, user_id: int = Depends(require_user)) -> dict:
     try:
         client = client_payload(payload)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     with connect() as conn:
-        server = export_state(conn)
+        server = export_state(conn, user_id)
         merged = merge_state(server, client)
-        import_state(conn, merged)
-        return export_state(conn)
+        import_state(conn, merged, user_id)
+        return export_state(conn, user_id)
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")

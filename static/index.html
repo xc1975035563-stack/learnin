@@ -3,19 +3,36 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>自习室</title>
-  <link rel="stylesheet" href="/static/style.css?v=8" />
+  <title>闪记</title>
+  <link rel="stylesheet" href="/static/style.css?v=9" />
 </head>
 <body>
   <div class="app">
     <header class="top">
       <div>
         <p class="eyebrow">一个库，两件事</p>
-        <h1>自习室</h1>
+        <h1>闪记</h1>
       </div>
-      <p class="today" id="today"></p>
+      <div class="account">
+        <p class="today" id="today"></p>
+        <button type="button" class="btn" id="logout" hidden>退出</button>
+      </div>
     </header>
 
+    <section class="panel gate" id="gate">
+      <p class="kicker" id="gate-title">登录后才能看到自己的题库</p>
+      <form class="form" id="auth-form">
+        <label>用户名<input name="username" required maxlength="32" autocomplete="username" /></label>
+        <label>密码<input name="password" type="password" required minlength="6" autocomplete="current-password" /></label>
+        <div class="row">
+          <button class="btn primary" type="submit" id="auth-submit">登录</button>
+          <button class="btn" type="button" id="auth-switch">没有账号，去注册</button>
+        </div>
+      </form>
+      <p class="hint">这台电脑上还没人注册时，第一个账号会接管已经存在的题库。之后注册的人是空库。</p>
+    </section>
+
+    <div id="desk" hidden>
     <nav class="tabs" aria-label="功能">
       <button class="tab active" data-view="review">今日复习</button>
       <button class="tab" data-view="notes">笔记</button>
@@ -27,8 +44,9 @@
     <p class="hint" id="sync-address"></p>
 
     <main id="view"></main>
+    </div>
     <p class="toast" id="toast" hidden></p>
   </div>
-  <script src="/static/app.js?v=11"></script>
+  <script src="/static/app.js?v=12"></script>
 </body>
 </html>
